@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Support Tickets</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<link href="https://maxcdn.bootstrapcdn.com/font-awesome/4.3.0/css/font-awesome.min.css" rel="stylesheet">
+	<script src="http://code.jquery.com/jquery-2.1.3.min.js"></script>
+	<script src="http://netdna.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js"></script>
+	<script type="text/javascript" src="http://botmonster.com/jquery-bootpag/jquery.bootpag.js"></script>
+	<link rel="stylesheet" href="http://netdna.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css">
+</head>
+<body>
+<script>
+
+    var SERVER_URL = "http://localhost:8080";
+
+    var api;
+    var token = '';
+    var account = {};
+
+    function API(server, username, password) {
+        this.server = server;
+        this.username = username;
+        this.password = password;
+    }
+
+    API.prototype.Register = function(email, password, callback) {
+        var request = {
+            email: email,
+            password: password,
+        };
+
+        var uri = this.server + '/api/signup/';
+        var data = JSON.stringify(request);
+
+        $.ajax({
+            url: uri,
+            method: 'POST',
+            contentType: 'application/json',
+            data: data,
+            dataType: 'json'
+        }).then(function(data) {
+			if (callback) {
+                callback(data);
+            }
+        }, function(jqXHR, textStatus, errorThrown) {
+            display_errors(jqXHR.responseJSON);
+        });
+    }
+
+    API.prototype.Authenticate = function(callback) {
+        var apiThis = this;
+        var request = {
+            username: this.username,
+            password: this.password
+        };
+
+        var uri = this.server + '/api/auth/login/';
+        var data = JSON.stringify(request);
+
+        $.ajax({
+            url: uri,
+            method: 'POST',
+            contentType: 'application/json',
+            data: data,
+            dataType: 'json'
+        }).then(function(data) {
+            if('token' in data) {
+                token = data.token;
+
+                if(callback) {
+                    callback(data);
+                }
+            }
+            else {
+                alert('Internal error.');
+            }
+        }, function(jqXHR, textStatus, errorThrown) {
+            display_errors(jqXHR.responseJSON);
+        });
+    }
+
+    API.prototype.Request = function(action, api_method, userRequest, callback) {
+        var uri;
+        var data;
+
+        if(userRequest) {
+            data = JSON.stringify(userRequest);
+        }
+
+        uri = this.server + action;
+
+        $.ajax({
+            url: uri,
+            method: api_method,
+            contentType: 'application/json',
+            data: data,
+            dataType: 'json',
+            headers: {
+                "Authorization": "Token " + token
+            },
+        }).then(function(data) {
+            if(data.success) {
+                if(callback) {
+                    callback(data);
+                }
+            }
+        }, function(jqXHR, textStatus, errorThrown) {
+            alert('Internal error (bad API request).');
+        });
+    };
+
+    function HomePage() {
+        $.ajax({
+            url: '/home',
+            cache: true
+        }).then(function(data) {
+            var api = new API(SERVER_URL);
+            $('#page').html(data);
+            api.Request('/api/account_details/', 'GET', {}, function(data) {
+                if(data.success){
+                    $('#username_info').text(data.result.email);
+                    account.email = data.result.email;
+                    account.is_customer_service = data.result.is_customer_service;
+                    if (account.is_customer_service) {
+                        $('#new_ticket_btn').hide();
+                    }
+                }
+            });
+
+            // Load Ticket List included pagination
+            generate_pagination(1);
+
+            // Create new ticket
+            $('#new-ticket-form').submit(function(event) {
+                var request;
+                event.preventDefault();
+                request = {
+                    subject: $('#subject').val(),
+                    description: $('#content').val()
+                };
+
+                api.Request('/api/new_ticket/', 'POST', request, function(data) {
+                    if(data.success == false) {
+                        display_errors(data);
+                    } else {
+                        $('#subject').val('');
+                        $('#content').val('');
+                        $('#newIssue').modal('hide');
+                        $('body').removeClass('modal-open');
+                        $('.modal-backdrop').remove();
+                        HomePage();
+                    }
+                });
+            });
+
+            // Reply a ticket
+            $('#reply-ticket-form').submit(function(event) {
+                var request;
+                event.preventDefault();
+                request = {
+                    content: $('#reply_content_txt').val()
+                };
+
+                api.Request('/api/tickets/'+$('#ticket_pk').val()+'/reply/', 'POST', request, function(data) {
+                    try{
+					    if(data.success){
+					        $('#reply_content_txt').val('');
+							$('#reply_btn').click();
+							load_replies(api, $("#ticket_pk").val(), 1);
+							// refresh ticket list
+						    generate_pagination(1);
+
+							$(".scroll-modal").scrollTop( $('body').height() );
+					    }else{
+					        alert("Failed to reply the ticket");
+					    }
+					}catch(err){
+						alert("Failed");
+					}
+                });
+            });
+
+            // Load ticket thread
+            $(document).on('click', '.ticket-item', function(e) {
+                var id = $(this).attr("ticket-id");
+                $('#reply-page-selection').html('');
+                api.Request('/api/tickets/'+id+'/', 'GET', {}, function(data) {
+                    if(data.success){
+                        // Fill ticket details
+                        $("#ticket_owner").text(data.result.owner);
+                        $("#ticket_human_time").text(data.result.human_time);
+                        $("#ticket_subject").text(data.result.subject);
+                        $("#ticket_description").html(data.result.description.replace(/\n/g,'<br/>'));
+                        $("#ticket_pk").val(id);
+
+                        //load ticket replies
+                        if(data.result.replies_count > 0){
+                            load_replies(api, id, 1);
+                        }else{
+                            $("#ticket_replies").html('');
+                        }
+
+                        $("#issue").modal("show");
+                    }
+                });
+            });
+
+            // Remove a reply
+            $(document).on('click', '.remove-reply', function(e) {
+                if(confirm("Do you want to remove this reply?")){
+					var id = $(this).attr("reply-id");
+					api.Request('/api/replies/'+id+'/', 'DELETE', {}, function(data) {
+						try{
+						    if(data.success){
+								load_replies(api, $("#ticket_pk").val(), 1);
+								// refresh ticket list
+							    generate_pagination(1);
+						    }else{
+						        alert("Failed to remove the reply");
+						    }
+						}catch(err){
+							alert("Failed");
+						}
+					});
+				}
+            });
+        });
+    }
+
+    function LoginPage() {
+        $.ajax({
+            url: '/login',
+            cache: true
+        }).then(function(data) {
+            $('#page').html(data);
+
+            $('#login-form').submit(function(event) {
+                event.preventDefault();
+                api = new API(SERVER_URL, $('#email').val(),$('#password').val());
+                api.Authenticate(function(data) {
+                    HomePage();
+                });
+            });
+
+            $('#register-form').submit(function(event) {
+                var registerApi = new API(SERVER_URL, $('#register-email').val(), $('#register-password').val());
+                registerApi.Register($('#register-email').val(), $('#register-password').val(), function(data)
+                {
+                    registerApi.Authenticate(function(data) {
+                        HomePage();
+                    });
+                });
+
+                event.preventDefault();
+            });
+        });
+    }
+
+    // load replies
+    function load_replies(api, id, page){
+        var url = '/api/tickets/'+id+'/replies/?page=' + page;
+        api.Request(url, 'GET', {}, function(data) {
+            if(data.success == false) {
+                display_errors(data);
+            } else {
+                var count = data.result.count;
+                var pages = Math.ceil(count / 10);
+                var html = "";
+                jQuery.each( data.result.results, function( i, reply ) {
+                    var remove_button = '';
+                    var avatar_url = 'https://i.pinimg.com/originals/7d/eb/0d/7deb0db7a4928366eab74e5a09bb24f2.png';
+                    if(reply.replied_by == account.email){
+						remove_button = '<a href="#" class="pull-right remove-reply" reply-id="'+reply.id+'">' +
+	                    '<span class="fa fa-remove"></span> &nbsp;Remove</a>';
+                    }
+                    if(reply.is_customer_service == "True"){
+	                    avatar_url = 'https://cdn3.iconfinder.com/data/icons/user-avatars-4/100/support_manager_operator_userprofile_avatar_person_account_-128.png';
+                    }
+                    html +=
+                        '<div class="row support-content-comment">'+
+                        '<div class="col-md-2">'+
+                        '<img src="'+avatar_url+'" class="img-circle" alt="" width="50">'+
+                        '</div>'+
+                        '<div class="col-md-10">'+
+                        '<p>'+reply.replied_by+' replied '+reply.human_time+'</p>'+
+                        '<p>'+reply.content.replace(/\n/g,'<br/>')+'</p>'+remove_button+'</div></div>';
+                });
+
+                if(pages > 1) {
+	                $('#reply-page-selection').bootpag({
+	                    total: pages,
+	                    page: page
+	                }).on("page", function(event, page){
+		                load_replies(api, id, page)
+	                });
+				}else{
+				    $('#reply-page-selection').html('');
+				}
+                $("#ticket_replies").html(html);
+            }
+        });
+    }
+
+    $(document).ready(function() {
+        LoginPage();
+    });
+
+    function display_errors(data){
+        var message = "";
+        try {
+            if(data.success == false){
+                jQuery.each(data.field_errors, function(key, value){
+                    message += key + ": " + value[0].message + "<br/>";
+                });
+                jQuery.each(data.non_field_errors, function(i, value){
+                    message += value.message + "<br/>";
+                });
+            }
+        }
+        catch(err) {
+            message = data;
+        }
+        $("#err_msg").html(message).show();
+    }
+
+    function generate_pagination(page){
+        var url = '/api/ticket_list/?page=' + page;
+        api = new API(SERVER_URL);
+        api.Request(url, 'GET', {}, function(data) {
+            if (data.success == true){
+                var count = data.result.count;
+                var pages = Math.ceil(count / 10);
+                var html = "";
+                $("#all_tickets").text(count);
+                jQuery.each( data.result.results, function( i, ticket ) {
+                    html += "<li class=\"list-group-item ticket-item\" id=\"ticket_"+ticket.id+"\" ticket-id=\""+ticket.id+"\">"+
+                        "<div class=\"media\">"+
+                        "<i class=\"fa fa-file-o pull-left\"></i>"+
+                        "<div class=\"media-body\">"+
+                        "<strong>" + ticket.subject + "</strong> " +
+                        "<span class=\"label label-"+bgStatus[ticket.status]+"\">" + ticket.status + "</span><span class=\"number pull-right\"># "+ticket.ticket_id+"</span>"+
+                        "<p class=\"info\">Opened by <a href=\"#\"><span class=\"open_by\">"+ticket.owner+"</span></a> " +
+                        "<span class=\"human_time\">"+ticket.human_time+"</span> <i class=\"fa fa-comments\"></i> " +
+                        "<a href=\"#\"><span class=\"replies_count\">"+ticket.replies_count+"</span> replies</a></p>"+
+                        "</div>"+
+                        "</div>"+
+                        "</li>";
+                });
+                $("#ticket_list").html(html);
+                if(pages > 1) {
+                    $('#page-selection').bootpag({
+                        total: pages,
+                        page: page
+                    }).on("page", function (event, num) {
+                        generate_pagination(num);
+                    });
+                }else{
+                    $('#page-selection').html('');
+                }
+            }else{
+                display_errors(data);
+            }
+        });
+    }
+</script>
+<div class="container" id="page"></div>
+</body>
+</html>
